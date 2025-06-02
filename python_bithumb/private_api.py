@@ -56,20 +56,25 @@ class Bithumb:
             token = token.decode('utf-8')
         return 'Bearer ' + token
 
-    def _handle_response(self, response):
+    def _handle_response(self, response, expected_status_codes=None):
         """
         API 응답을 처리하고 오류를 적절히 처리합니다.
         
         Args:
             response: requests Response 객체
+            expected_status_codes: list of int, optional
+                성공으로 간주할 HTTP 상태 코드 리스트. 기본값은 [200].
             
         Returns:
             파싱된 JSON 응답 데이터
             
         Raises:
-            BithumbAPIException: API가 오류를 반환하는 경우
+            BithumbAPIException: API가 예상치 못한 상태 코드를 반환하거나 오류를 반환하는 경우
         """
-        if response.status_code != 200:
+        if expected_status_codes is None:
+            expected_status_codes = [200]
+
+        if response.status_code not in expected_status_codes:
             error_msg = "Unknown error"
             try:
                 error_data = response.json()
@@ -81,12 +86,22 @@ class Bithumb:
                         error_msg = f"Error {error_name}: {error_message}"
                     else:
                         error_msg = str(error_info)
-            except:
+                # Handle cases where error_data is not a dict or 'error' key is missing
+                elif isinstance(error_data, dict):
+                     error_msg = json.dumps(error_data) # Convert dict to string
+                else:
+                    error_msg = response.text # Fallback to raw text
+            except json.JSONDecodeError: # Catch JSON parsing errors
                 error_msg = response.text or "Could not parse error response"
-            
+            except Exception: # Catch any other unexpected errors during error parsing
+                error_msg = response.text or "An unexpected error occurred while parsing the error response"
+
             raise BithumbAPIException(response.status_code, error_msg, response)
         
-        return response.json()
+        # 성공적인 응답이라도 내용이 없을 수 있으므로 확인
+        if response.content:
+            return response.json()
+        return None # 내용이 없는 성공 응답의 경우 None 반환
 
     def _request(self, method: str, endpoint: str, params=None, data=None):
         """
@@ -125,8 +140,13 @@ class Bithumb:
 
             headers['Authorization'] = self._create_token(query_hash=query_hash, query_hash_alg='SHA512')
             headers['Content-Type'] = 'application/json'
+
+            expected_status_codes = [200]
+            if method.upper() == "POST" and endpoint == "/v1/orders":
+                expected_status_codes = [200, 201]
+
             resp = requests.request(method, url, headers=headers, params=None, data=json.dumps(data))
-            return self._handle_response(resp)
+            return self._handle_response(resp, expected_status_codes=expected_status_codes)
         elif method.upper() == "GET":
             # GET 요청인 경우 params를 이용
             # query_hash 필요: Private API GET 요청 시에도 파라미터가 있으면 query_hash 필요
@@ -142,12 +162,12 @@ class Bithumb:
                 headers['Authorization'] = self._create_token()
 
             resp = requests.get(url, headers=headers, params=params)
-            return self._handle_response(resp)
+            return self._handle_response(resp, expected_status_codes=[200])
         else:
             # data 없음 or 기타 method
             headers['Authorization'] = self._create_token()
             resp = requests.request(method, url, headers=headers, params=params, data=data)
-            return self._handle_response(resp)
+            return self._handle_response(resp, expected_status_codes=[200])
 
     def get_balances(self):
         """
@@ -358,7 +378,7 @@ class Bithumb:
 
         url = f"{self.BASE_URL}/v1/orders?{final_query}"
         resp = requests.get(url, headers=headers)
-        return self._handle_response(resp)
+        return self._handle_response(resp, expected_status_codes=[200])
 
     def cancel_order(self, order_uuid: str):
         """
@@ -399,4 +419,4 @@ class Bithumb:
 
         url = f"{self.BASE_URL}{endpoint}"
         resp = requests.delete(url, headers=headers, params=params)
-        return self._handle_response(resp)
+        return self._handle_response(resp, expected_status_codes=[200])
